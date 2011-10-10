@@ -31,9 +31,10 @@
 package mgo_test
 
 import (
-	"launchpad.net/gobson/bson"
+	//"launchpad.net/gobson/bson"
+	"github.com/CloudMarc/mgo/gobson"
 	. "launchpad.net/gocheck"
-	"launchpad.net/mgo"
+	"github.com/CloudMarc/mgo/mgo"
 	"os"
 	"time"
 )

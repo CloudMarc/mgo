@@ -32,7 +32,8 @@ package mgo_test
 
 import (
 	. "launchpad.net/gocheck"
-	"launchpad.net/mgo"
+	//"launchpad.net/mgo"
+	"github.com/CloudMarc/mgo/mgo"
 	"os"
 	"strings"
 	"time"

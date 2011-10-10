@@ -31,9 +31,11 @@
 package mgo_test
 
 import (
-	"launchpad.net/gobson/bson"
+	//"launchpad.net/gobson/bson"
+	"github.com/CloudMarc/mgo/gobson"
 	. "launchpad.net/gocheck"
-	"launchpad.net/mgo"
+	//"launchpad.net/mgo"
+	"github.com/CloudMarc/mgo/mgo"
 	"os"
 	"sort"
 	"strconv"

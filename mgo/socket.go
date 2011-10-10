@@ -31,7 +31,8 @@
 package mgo
 
 import (
-	"launchpad.net/gobson/bson"
+	//"launchpad.net/gobson/bson"
+	"github.com/CloudMarc/mgo/gobson"
 	"sync"
 	"net"
 	"os"

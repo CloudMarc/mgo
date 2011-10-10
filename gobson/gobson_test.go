@@ -37,7 +37,8 @@ import (
 	"testing"
 	"reflect"
 	"time"
-	"launchpad.net/gobson/bson"
+	//"launchpad.net/gobson/bson"
+	"github.com/CloudMarc/mgo/gobson"
 	"os"
 )
 
