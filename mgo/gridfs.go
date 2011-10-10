@@ -36,7 +36,6 @@ import (
 	"hash"
 	"launchpad.net/gobson/bson"
 	"os"
-	"runtime"
 	"sync"
 )
 
@@ -77,11 +76,11 @@ type gfsFile struct {
 	Id          interface{}    "_id"
 	ChunkSize   int            "chunkSize"
 	UploadDate  bson.Timestamp "uploadDate"
-	Length      int64          "/s"
+	Length      int64          ",minsize"
 	MD5         string
-	Filename    string    "/c"
-	ContentType string    "contentType/c"
-	Metadata    *bson.Raw "/c"
+	Filename    string    ",omitempty"
+	ContentType string    "contentType,omitempty"
+	Metadata    *bson.Raw ",omitempty"
 }
 
 type gfsChunk struct {
@@ -105,7 +104,7 @@ func newGridFS(db Database, prefix string) *GridFS {
 func (gfs GridFS) newFile() *GridFile {
 	file := &GridFile{gfs: gfs}
 	file.c.L = &file.m
-	runtime.SetFinalizer(file, finalizeFile)
+	//runtime.SetFinalizer(file, finalizeFile)
 	return file
 }
 
@@ -421,6 +420,11 @@ func (file *GridFile) MD5() (md5 string) {
 	return file.doc.MD5
 }
 
+// UploadDate returns the file upload time in nanoseconds.
+func (file *GridFile) UploadDate() int64 {
+	return int64(file.doc.UploadDate)
+}
+
 // Close flushes any pending changes in case the file is being written
 // to, waits for any background operations to finish, and closes the file.
 //
@@ -553,6 +557,43 @@ func (file *GridFile) insertFile() {
 	}
 }
 
+// Seek sets the offset for the next Read or Write on file to
+// offset, interpreted according to whence: 0 means relative to
+// the origin of the file, 1 means relative to the current offset,
+// and 2 means relative to the end. It returns the new offset and
+// an Error, if any.
+func (file *GridFile) Seek(offset int64, whence int) (pos int64, err os.Error) {
+	file.m.Lock()
+	debugf("GridFile %p: seeking for %s (whence=%d)", file, offset, whence)
+	defer file.m.Unlock()
+	switch whence {
+	case os.SEEK_SET:
+	case os.SEEK_CUR:
+		offset += file.offset
+	case os.SEEK_END:
+		offset += file.doc.Length
+	default:
+		panic("Unsupported whence value")
+	}
+	if offset > file.doc.Length {
+		return file.offset, os.NewError("Seek past end of file")
+	}
+	chunk := int(offset / int64(file.doc.ChunkSize))
+	if chunk+1 == file.chunk && offset >= file.offset {
+		file.rbuf = file.rbuf[int(offset-file.offset):]
+		file.offset = offset
+		return file.offset, nil
+	}
+	file.offset = offset
+	file.chunk = chunk
+	file.rbuf = nil
+	file.rbuf, err = file.getChunk()
+	if err == nil {
+		file.rbuf = file.rbuf[int(file.offset-int64(chunk)*int64(file.doc.ChunkSize)):]
+	}
+	return file.offset, err
+}
+
 // Read reads into b the next available data from the file and
 // returns the number of bytes written and an error in case
 // something wrong happened.  At the end of the file, n will
@@ -601,9 +642,13 @@ func (file *GridFile) getChunk() (data []byte, err os.Error) {
 		cache = &gfsCachedChunk{n: file.chunk}
 		cache.wait.Lock()
 		debugf("GridFile %p: Scheduling chunk %d for background caching", file, file.chunk)
+		chunks := file.gfs.Chunks
+		// Clone the session to avoid having it closed in between.
+		chunks.DB.Session = chunks.DB.Session.Clone()
 		go func(id interface{}, n int) {
+			defer chunks.DB.Session.Close()
 			var doc gfsChunk
-			cache.err = file.gfs.Chunks.Find(bson.D{{"files_id", id}, {"n", n}}).One(&doc)
+			cache.err = chunks.Find(bson.D{{"files_id", id}, {"n", n}}).One(&doc)
 			cache.data = doc.Data
 			cache.wait.Unlock()
 		}(file.doc.Id, file.chunk)

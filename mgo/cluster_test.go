@@ -53,7 +53,7 @@ func (s *S) TestNewSession(c *C) {
 	session.SetBatch(-1)
 	other := session.New()
 	defer other.Close()
-	session.SetSafe(&mgo.Safe{0, 0, false})
+	session.SetSafe(&mgo.Safe{})
 
 	// Clone was copied while session was unsafe, so no errors.
 	otherColl := other.DB("mydb").C("mycoll")
@@ -105,7 +105,7 @@ func (s *S) TestCloneSession(c *C) {
 	session.SetBatch(-1)
 	clone := session.Clone()
 	defer clone.Close()
-	session.SetSafe(&mgo.Safe{0, 0, false})
+	session.SetSafe(&mgo.Safe{})
 
 	// Clone was copied while session was unsafe, so no errors.
 	cloneColl := clone.DB("mydb").C("mycoll")
@@ -174,7 +174,7 @@ func (s *S) TestSetModeStrong(c *C) {
 	c.Assert(err, IsNil)
 
 	// Wait since the sync also uses sockets.
-	for len(session.GetLiveServers()) != 3 {
+	for len(session.LiveServers()) != 3 {
 		c.Log("Waiting for cluster sync to finish...")
 		time.Sleep(5e8)
 	}
@@ -217,7 +217,7 @@ func (s *S) TestSetModeMonotonic(c *C) {
 	c.Assert(result["ismaster"], Equals, true)
 
 	// Wait since the sync also uses sockets.
-	for len(session.GetLiveServers()) != 3 {
+	for len(session.LiveServers()) != 3 {
 		c.Log("Waiting for cluster sync to finish...")
 		time.Sleep(5e8)
 	}
@@ -249,7 +249,7 @@ func (s *S) TestSetModeMonotonicAfterStrong(c *C) {
 	session.SetMode(mgo.Monotonic, false)
 
 	// Wait since the sync also uses sockets.
-	for len(session.GetLiveServers()) != 3 {
+	for len(session.LiveServers()) != 3 {
 		c.Log("Waiting for cluster sync to finish...")
 		time.Sleep(5e8)
 	}
@@ -290,7 +290,7 @@ func (s *S) TestSetModeStrongAfterMonotonic(c *C) {
 	session.SetMode(mgo.Strong, false)
 
 	// Wait since the sync also uses sockets.
-	for len(session.GetLiveServers()) != 3 {
+	for len(session.LiveServers()) != 3 {
 		c.Log("Waiting for cluster sync to finish...")
 		time.Sleep(5e8)
 	}
@@ -332,7 +332,7 @@ func (s *S) TestSetModeEventual(c *C) {
 	c.Assert(result["ismaster"], Equals, false)
 
 	// Wait since the sync also uses sockets.
-	for len(session.GetLiveServers()) != 3 {
+	for len(session.LiveServers()) != 3 {
 		c.Log("Waiting for cluster sync to finish...")
 		time.Sleep(5e8)
 	}
@@ -359,7 +359,7 @@ func (s *S) TestSetModeEventualAfterStrong(c *C) {
 	session.SetMode(mgo.Eventual, false)
 
 	// Wait since the sync also uses sockets.
-	for len(session.GetLiveServers()) != 3 {
+	for len(session.LiveServers()) != 3 {
 		c.Log("Waiting for cluster sync to finish...")
 		time.Sleep(5e8)
 	}

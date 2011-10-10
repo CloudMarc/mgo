@@ -35,6 +35,7 @@ import (
 	. "launchpad.net/gocheck"
 	"launchpad.net/mgo"
 	"os"
+	"time"
 )
 
 func (s *S) TestGridFSCreate(c *C) {
@@ -159,6 +160,9 @@ func (s *S) TestGridFSFileDetails(c *C) {
 	c.Assert(err, IsNil)
 
 	c.Assert(file.MD5(), Equals, "1e50210a0202497fb79bc38b6ade6c34")
+
+	c.Assert(file.UploadDate() < time.Nanoseconds(), Equals, true)
+	c.Assert(file.UploadDate() > time.Nanoseconds() - 3e9, Equals, true)
 
 	result := M{}
 	err = db.C("fs.files").Find(nil).One(result)
@@ -405,6 +409,78 @@ func (s *S) TestGridFSOpen(c *C) {
 	_, err = file.Read(b[:])
 	c.Assert(err, IsNil)
 	c.Assert(string(b[:]), Equals, "2")
+}
+
+func (s *S) TestGridFSSeek(c *C) {
+	session, err := mgo.Mongo("localhost:40011")
+	c.Assert(err, IsNil)
+	defer session.Close()
+
+	db := session.DB("mydb")
+
+	gfs := db.GridFS("fs")
+	file, err := gfs.Create("")
+	c.Assert(err, IsNil)
+	id := file.Id()
+
+	file.SetChunkSize(5)
+
+	n, err := file.Write([]byte("abcdefghijklmnopqrstuv"))
+	c.Assert(err, IsNil)
+	c.Assert(n, Equals, 22)
+
+	err = file.Close()
+	c.Assert(err, IsNil)
+
+	b := make([]byte, 5)
+
+	file, err = gfs.OpenId(id)
+	c.Assert(err, IsNil)
+
+	o, err := file.Seek(3, os.SEEK_SET)
+	c.Assert(err, IsNil)
+	c.Assert(o, Equals, int64(3))
+	_, err = file.Read(b)
+	c.Assert(err, IsNil)
+	c.Assert(b, Equals, []byte("defgh"))
+
+	o, err = file.Seek(5, os.SEEK_CUR)
+	c.Assert(err, IsNil)
+	c.Assert(o, Equals, int64(13))
+	_, err = file.Read(b)
+	c.Assert(err, IsNil)
+	c.Assert(b, Equals, []byte("nopqr"))
+
+	o, err = file.Seek(-10, os.SEEK_END)
+	c.Assert(err, IsNil)
+	c.Assert(o, Equals, int64(12))
+	_, err = file.Read(b)
+	c.Assert(err, IsNil)
+	c.Assert(b, Equals, []byte("mnopq"))
+
+	o, err = file.Seek(8, os.SEEK_SET)
+	c.Assert(err, IsNil)
+	c.Assert(o, Equals, int64(8))
+	_, err = file.Read(b)
+	c.Assert(err, IsNil)
+	c.Assert(b, Equals, []byte("ijklm"))
+
+	// Trivial seek forward within same chunk. Already
+	// got the data, shouldn't touch the database.
+	sent := mgo.GetStats().SentOps
+	o, err = file.Seek(1, os.SEEK_CUR)
+	c.Assert(err, IsNil)
+	c.Assert(o, Equals, int64(14))
+	c.Assert(mgo.GetStats().SentOps, Equals, sent)
+	_, err = file.Read(b)
+	c.Assert(err, IsNil)
+	c.Assert(b, Equals, []byte("opqrs"))
+
+	// Try seeking past end of file.
+	file.Seek(3, os.SEEK_SET)
+	o, err = file.Seek(23, os.SEEK_SET)
+	c.Assert(err, Matches, "Seek past end of file")
+	c.Assert(o, Equals, int64(3))
 }
 
 func (s *S) TestGridFSRemoveId(c *C) {

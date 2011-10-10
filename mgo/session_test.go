@@ -37,6 +37,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -189,6 +190,78 @@ func (s *S) TestInsertFindOneMap(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(result["a"], Equals, 1)
 	c.Assert(result["b"], Equals, 2)
+}
+
+func (s *S) TestFindRef(c *C) {
+	session, err := mgo.Mongo("localhost:40001")
+	c.Assert(err, IsNil)
+	defer session.Close()
+
+	db1 := session.DB("db1")
+	db1col1 := db1.C("col1")
+
+	db2 := session.DB("db2")
+	db2col1 := db2.C("col1")
+
+	db1col1.Insert(M{"_id": 1, "n": 1})
+	db1col1.Insert(M{"_id": 2, "n": 2})
+	db2col1.Insert(M{"_id": 2, "n": 3})
+
+	result := struct{ N int }{}
+
+	ref1 := mgo.DBRef{C: "col1", ID: 1}
+	ref2 := mgo.DBRef{C: "col1", ID: 2, DB: "db2"}
+
+	err = db1.FindRef(ref1, &result)
+	c.Assert(err, IsNil)
+	c.Assert(result.N, Equals, 1)
+
+	err = db1.FindRef(ref2, &result)
+	c.Assert(err, IsNil)
+	c.Assert(result.N, Equals, 3)
+
+	err = db2.FindRef(ref1, &result)
+	c.Assert(err, Equals, mgo.NotFound)
+
+	err = db2.FindRef(ref2, &result)
+	c.Assert(err, IsNil)
+	c.Assert(result.N, Equals, 3)
+
+	err = session.FindRef(ref2, &result)
+	c.Assert(err, IsNil)
+	c.Assert(result.N, Equals, 3)
+
+	err = session.FindRef(ref1, &result)
+	c.Assert(err, Matches, "Can't resolve database for mgo.DBRef{C:\"col1\", ID:1, DB:\"\"}")
+}
+
+func (s *S) TestDatabaseAndCollectionNames(c *C) {
+	session, err := mgo.Mongo("localhost:40001")
+	c.Assert(err, IsNil)
+	defer session.Close()
+
+	db1 := session.DB("db1")
+	db1col1 := db1.C("col1")
+	db1col2 := db1.C("col2")
+
+	db2 := session.DB("db2")
+	db2col1 := db2.C("col3")
+
+	db1col1.Insert(M{"_id": 1})
+	db1col2.Insert(M{"_id": 1})
+	db2col1.Insert(M{"_id": 1})
+
+	names, err := session.DatabaseNames()
+	c.Assert(err, IsNil)
+	c.Assert(names, Equals, []string{"db1", "db2"})
+
+	names, err = db1.CollectionNames()
+	c.Assert(err, IsNil)
+	c.Assert(names, Equals, []string{"col1", "col2", "system.indexes"})
+
+	names, err = db2.CollectionNames()
+	c.Assert(err, IsNil)
+	c.Assert(names, Equals, []string{"col3", "system.indexes"})
 }
 
 func (s *S) TestSelect(c *C) {
@@ -371,6 +444,56 @@ func (s *S) TestRemoveAll(c *C) {
 
 	err = coll.Find(M{"n": 44}).One(result)
 	c.Assert(err, Equals, mgo.NotFound)
+}
+
+func (s *S) TestDropDatabase(c *C) {
+	session, err := mgo.Mongo("localhost:40001")
+	c.Assert(err, IsNil)
+	defer session.Close()
+
+	db1 := session.DB("db1")
+	db1.C("col").Insert(M{"_id": 1})
+
+	db2 := session.DB("db2")
+	db2.C("col").Insert(M{"_id": 1})
+
+	err = db1.DropDatabase()
+	c.Assert(err, IsNil)
+
+	names, err := session.DatabaseNames()
+	c.Assert(err, IsNil)
+	c.Assert(names, Equals, []string{"db2"})
+
+	err = db2.DropDatabase()
+	c.Assert(err, IsNil)
+
+	names, err = session.DatabaseNames()
+	c.Assert(err, IsNil)
+	c.Assert(names, Equals, []string{})
+}
+
+func (s *S) TestDropCollection(c *C) {
+	session, err := mgo.Mongo("localhost:40001")
+	c.Assert(err, IsNil)
+	defer session.Close()
+
+	db := session.DB("db1")
+	db.C("col1").Insert(M{"_id": 1})
+	db.C("col2").Insert(M{"_id": 1})
+
+	err = db.C("col1").DropCollection()
+	c.Assert(err, IsNil)
+
+	names, err := db.CollectionNames()
+	c.Assert(err, IsNil)
+	c.Assert(names, Equals, []string{"col2", "system.indexes"})
+
+	err = db.C("col2").DropCollection()
+	c.Assert(err, IsNil)
+
+	names, err = db.CollectionNames()
+	c.Assert(err, IsNil)
+	c.Assert(names, Equals, []string{"system.indexes"})
 }
 
 func (s *S) TestFindAndModify(c *C) {
@@ -714,6 +837,60 @@ func (s *S) TestFindIterLimitWithBatch(c *C) {
 	c.Assert(stats.ReceivedDocs, Equals, 3)
 	c.Assert(stats.SocketsInUse, Equals, 0)
 }
+
+func (s *S) TestFindIterSortWithBatch(c *C) {
+	session, err := mgo.Mongo("localhost:40001")
+	c.Assert(err, IsNil)
+	defer session.Close()
+
+	coll := session.DB("mydb").C("mycoll")
+
+	ns := []int{40, 41, 42, 43, 44, 45, 46}
+	for _, n := range ns {
+		coll.Insert(M{"n": n})
+	}
+
+	// Without this, the logic above breaks because Mongo refuses to
+	// return a cursor with an in-memory sort.
+	coll.EnsureIndexKey([]string{"n"})
+
+	// Ping the database to ensure the nonce has been received already.
+	c.Assert(session.Ping(), IsNil)
+
+	session.Refresh() // Release socket.
+
+	mgo.ResetStats()
+
+	query := coll.Find(M{"n": M{"$lte": 44}}).Sort(M{"n": -1}).Batch(2)
+	iter, err := query.Iter()
+	c.Assert(err, IsNil)
+
+	ns = []int{46, 45, 44, 43, 42, 41, 40}
+
+	result := struct{ N int }{}
+	for i := 2; i < len(ns); i++ {
+		err = iter.Next(&result)
+		c.Logf("i=%d", i)
+		c.Assert(err, IsNil)
+		c.Assert(result.N, Equals, ns[i])
+		if i == 3 {
+			stats := mgo.GetStats()
+			c.Assert(stats.ReceivedDocs, Equals, 2)
+		}
+	}
+
+	err = iter.Next(&result)
+	c.Assert(err == mgo.NotFound, Equals, true)
+
+	session.Refresh() // Release socket.
+
+	stats := mgo.GetStats()
+	c.Assert(stats.SentOps, Equals, 3)     // 1*QUERY_OP + 2*GET_MORE_OP
+	c.Assert(stats.ReceivedOps, Equals, 3) // and its REPLY_OPs
+	c.Assert(stats.ReceivedDocs, Equals, 5)
+	c.Assert(stats.SocketsInUse, Equals, 0)
+}
+
 
 // Test tailable cursors in a situation where Next has to sleep to
 // respect the timeout requested on Tail.
@@ -1260,57 +1437,89 @@ func (s *S) TestSafeSetting(c *C) {
 	// Check the default
 	safe := session.Safe()
 	c.Assert(safe.W, Equals, 0)
+	c.Assert(safe.WMode, Equals, "")
 	c.Assert(safe.WTimeout, Equals, 0)
 	c.Assert(safe.FSync, Equals, false)
+	c.Assert(safe.J, Equals, false)
 
 	// Tweak it
 	session.SetSafe(&mgo.Safe{W: 1, WTimeout: 2, FSync: true})
 	safe = session.Safe()
 	c.Assert(safe.W, Equals, 1)
+	c.Assert(safe.WMode, Equals, "")
 	c.Assert(safe.WTimeout, Equals, 2)
 	c.Assert(safe.FSync, Equals, true)
+	c.Assert(safe.J, Equals, false)
 
 	// Reset it again.
 	session.SetSafe(&mgo.Safe{})
 	safe = session.Safe()
 	c.Assert(safe.W, Equals, 0)
+	c.Assert(safe.WMode, Equals, "")
 	c.Assert(safe.WTimeout, Equals, 0)
 	c.Assert(safe.FSync, Equals, false)
+	c.Assert(safe.J, Equals, false)
 
-	// Ensure safety to something higher.
-	session.SetSafe(&mgo.Safe{W: 5, WTimeout: 6, FSync: true})
+	// Ensure safety to something more conservative.
+	session.SetSafe(&mgo.Safe{W: 5, WTimeout: 6, J: true})
 	safe = session.Safe()
 	c.Assert(safe.W, Equals, 5)
+	c.Assert(safe.WMode, Equals, "")
 	c.Assert(safe.WTimeout, Equals, 6)
-	c.Assert(safe.FSync, Equals, true)
+	c.Assert(safe.FSync, Equals, false)
+	c.Assert(safe.J, Equals, true)
 
 	// Ensure safety to something less conservative won't change it.
-	session.EnsureSafe(&mgo.Safe{W: 4, WTimeout: 7, FSync: false})
+	session.EnsureSafe(&mgo.Safe{W: 4, WTimeout: 7})
 	safe = session.Safe()
 	c.Assert(safe.W, Equals, 5)
+	c.Assert(safe.WMode, Equals, "")
 	c.Assert(safe.WTimeout, Equals, 6)
-	c.Assert(safe.FSync, Equals, true)
+	c.Assert(safe.FSync, Equals, false)
+	c.Assert(safe.J, Equals, true)
 
 	// But to something more conservative will.
-	session.EnsureSafe(&mgo.Safe{W: 6, WTimeout: 4})
+	session.EnsureSafe(&mgo.Safe{W: 6, WTimeout: 4, FSync: true})
 	safe = session.Safe()
 	c.Assert(safe.W, Equals, 6)
+	c.Assert(safe.WMode, Equals, "")
 	c.Assert(safe.WTimeout, Equals, 4)
 	c.Assert(safe.FSync, Equals, true)
+	c.Assert(safe.J, Equals, false)
+
+	// Even more conservative.
+	session.EnsureSafe(&mgo.Safe{WMode: "majority", WTimeout: 2})
+	safe = session.Safe()
+	c.Assert(safe.W, Equals, 0)
+	c.Assert(safe.WMode, Equals, "majority")
+	c.Assert(safe.WTimeout, Equals, 2)
+	c.Assert(safe.FSync, Equals, true)
+	c.Assert(safe.J, Equals, false)
+
+	// WMode always overrides, whatever it is, but J doesn't.
+	session.EnsureSafe(&mgo.Safe{WMode: "something", J: true})
+	safe = session.Safe()
+	c.Assert(safe.W, Equals, 0)
+	c.Assert(safe.WMode, Equals, "something")
+	c.Assert(safe.WTimeout, Equals, 2)
+	c.Assert(safe.FSync, Equals, true)
+	c.Assert(safe.J, Equals, false)
 
 	// EnsureSafe with nil does nothing.
 	session.EnsureSafe(nil)
 	safe = session.Safe()
-	c.Assert(safe.W, Equals, 6)
-	c.Assert(safe.WTimeout, Equals, 4)
+	c.Assert(safe.W, Equals, 0)
+	c.Assert(safe.WMode, Equals, "something")
+	c.Assert(safe.WTimeout, Equals, 2)
 	c.Assert(safe.FSync, Equals, true)
+	c.Assert(safe.J, Equals, false)
 
 	// Changing the safety of a cloned session doesn't touch the original.
 	clone := session.Clone()
 	defer clone.Close()
-	clone.EnsureSafe(&mgo.Safe{W: 100})
+	clone.EnsureSafe(&mgo.Safe{WMode: "foo"})
 	safe = session.Safe()
-	c.Assert(safe.W, Equals, 6)
+	c.Assert(safe.WMode, Equals, "something")
 }
 
 func (s *S) TestSafeInsert(c *C) {
@@ -1355,7 +1564,7 @@ func (s *S) TestSafeParameters(c *C) {
 	coll := session.DB("mydb").C("mycoll")
 
 	// Tweak the safety parameters to something unachievable.
-	session.SetSafe(&mgo.Safe{4, 100, false})
+	session.SetSafe(&mgo.Safe{W: 4, WTimeout: 100})
 	err = coll.Insert(M{"_id": 1})
 	c.Assert(err, Matches, "timeout")
 	c.Assert(err.(*mgo.LastError).WTimeout, Equals, true)
@@ -1452,25 +1661,26 @@ func (s *S) TestEnsureIndex(c *C) {
 	err = sysidx.Find(M{"name": "loc_"}).One(result3)
 	c.Assert(err, IsNil)
 
+	result1["v"] = nil, false
 	expected1 := M{
 		"name":       "a_1",
 		"key":        bson.M{"a": 1},
 		"ns":         "mydb.mycoll",
-		"v":          0,
 		"background": true,
 	}
 	c.Assert(result1, Equals, expected1)
 
+	result2["v"] = nil, false
 	expected2 := M{
 		"name":     "a_1_b_-1",
 		"key":      bson.M{"a": 1, "b": -1},
 		"ns":       "mydb.mycoll",
 		"unique":   true,
 		"dropDups": true,
-		"v":        0,
 	}
 	c.Assert(result2, Equals, expected2)
 
+	result3["v"] = nil, false
 	expected3 := M{
 		"name": "loc_",
 		"key":  bson.M{"loc": "2d"},
@@ -1550,19 +1760,19 @@ func (s *S) TestEnsureIndexKey(c *C) {
 	err = sysidx.Find(M{"name": "a_1_b_-1"}).One(result2)
 	c.Assert(err, IsNil)
 
+	result1["v"] = nil, false
 	expected1 := M{
 		"name": "a_1",
 		"key":  bson.M{"a": 1},
 		"ns":   "mydb.mycoll",
-		"v":    0,
 	}
 	c.Assert(result1, Equals, expected1)
 
+	result2["v"] = nil, false
 	expected2 := M{
 		"name": "a_1_b_-1",
 		"key":  bson.M{"a": 1, "b": -1},
 		"ns":   "mydb.mycoll",
-		"v":    0,
 	}
 	c.Assert(result2, Equals, expected2)
 }
@@ -1684,7 +1894,7 @@ func (s *S) TestDistinct(c *C) {
 	var result []int
 	err = coll.Find(M{"n": M{"$gt": 2}}).Sort(M{"n": 1}).Distinct("n", &result)
 
-	sort.SortInts(result)
+	sort.IntSlice(result).Sort()
 	c.Assert(result, Equals, []int{3, 4, 6})
 }
 
@@ -1724,9 +1934,10 @@ func (s *S) TestMapReduce(c *C) {
 		expected[item.Id] = -1
 	}
 
-	// Ensure proper delivery of Sort request.
+	// Weak attempt of testing that Sort gets delivered.
 	_, err = coll.Find(nil).Sort(M{"n": -1}).MapReduce(job, &result)
-	c.Assert(err, Matches, "best guess plan requested, but scan and order .*")
+	_, isQueryError := err.(*mgo.QueryError)
+	c.Assert(isQueryError, Equals, true)
 }
 
 func (s *S) TestMapReduceFinalize(c *C) {
@@ -1907,4 +2118,33 @@ func (s *S) TestMapReduceLimit(c *C) {
 	_, err = coll.Find(nil).Limit(3).MapReduce(job, &result)
 	c.Assert(err, IsNil)
 	c.Assert(len(result), Equals, 3)
+}
+
+func (s *S) TestBuildInfo(c *C) {
+	session, err := mgo.Mongo("localhost:40001")
+	c.Assert(err, IsNil)
+	defer session.Close()
+
+	info, err := session.BuildInfo()
+	c.Assert(err, IsNil)
+
+	var v []int
+	for _, a := range strings.Split(info.Version, ".") {
+		i, err := strconv.Atoi(a)
+		c.Assert(err, IsNil)
+		v = append(v, i)
+	}
+	for len(v) < 4 {
+		v = append(v, 0)
+	}
+
+	c.Assert(info.VersionArray, Equals, v)
+	c.Assert(info.GitVersion, Matches, "[a-z0-9]+")
+	c.Assert(info.SysInfo, Matches, ".*[0-9:]+.*")
+	if info.Bits != 32 && info.Bits != 64 {
+		c.Fatalf("info.Bits is %d", info.Bits)
+	}
+	if info.MaxObjectSize < 8192 {
+		c.Fatalf("info.MaxObjectSize seems too small: %d", info.MaxObjectSize)
+	}
 }
